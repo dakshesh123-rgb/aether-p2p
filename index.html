@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Aether P2P — E2EE Serverless Communication Vault</title>
   <link rel="stylesheet" href="styles.css">
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#000000">
 </head>
 <body>
 
@@ -17,7 +19,24 @@
         </svg>
         AETHER<span>P2P</span>
       </div>
-      <div id="connection-status" class="badge">DISCONNECTED</div>
+      <div class="nav-actions">
+        <button id="btn-open-ice-settings" class="badge badge-ice-mode" title="Configure STUN & NAT Traversal Settings">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -1px; margin-right: 4px;">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+          <span id="label-ice-mode">ICE: Community Mesh</span>
+        </button>
+        <button id="btn-export-standalone" class="badge" title="Export this entire app as an offline single-file HTML executable">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -1px; margin-right: 4px;">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          Offline Vault
+        </button>
+        <div id="connection-status" class="badge">DISCONNECTED</div>
+      </div>
     </div>
   </header>
 
@@ -200,9 +219,127 @@
             </div>
           </div>
         </div>
+
+        <!-- Out-Of-Band Verification Component -->
+        <div class="safety-verification-card">
+          <div class="safety-header">
+            <span class="form-label" style="margin: 0;">Out-Of-Band Verification (Anti-MITM)</span>
+            <span id="safety-verification-badge" class="safety-badge-status unverified">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="12" y1="8" x2="12" y2="12"/>
+                <line x1="12" y1="16" x2="12.01" y2="16"/>
+              </svg>
+              UNVERIFIED PEER
+            </span>
+          </div>
+          <p style="font-size: 0.75rem; color: var(--color-text-secondary); margin-bottom: var(--space-8);">
+            Compare this 6-digit Safety Code verbally (phone/audio call) or in-person with your peer to ensure the SDP handshake wasn't intercepted or modified.
+          </p>
+          <div class="safety-code-display">
+            <div id="safety-code-number" class="safety-number-block">------</div>
+          </div>
+          <div class="safety-actions">
+            <button id="btn-toggle-verify-peer" class="btn btn-secondary btn-verify" disabled>
+              Mark Peer Identity as Verified
+            </button>
+          </div>
+        </div>
+
       </div>
     </div>
   </main>
+
+  <!-- Network Sovereignty & ICE Settings Modal -->
+  <div id="ice-settings-modal" class="modal-backdrop">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="2" y1="12" x2="22" y2="12"/>
+            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+          </svg>
+          Network Sovereignty & STUN
+        </h3>
+        <button id="btn-close-ice-modal" class="btn-close-modal" aria-label="Close">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="modal-body">
+        <p style="font-size: 0.8rem; color: var(--color-text-secondary); margin-bottom: var(--space-16);">
+          Choose how NAT traversal & ICE candidate discovery are handled. Unlike standard WebRTC apps that default solely to corporate Google STUN servers, Aether allows full sovereignty:
+        </p>
+
+        <div class="settings-radio-group">
+          <!-- Community Mesh -->
+          <label class="radio-card active" id="card-ice-community">
+            <input type="radio" name="ice-mode" value="community" checked>
+            <div class="radio-card-content">
+              <div class="radio-card-title">
+                Decentralized Community STUN Mesh
+                <span class="radio-card-badge">RECOMMENDED</span>
+              </div>
+              <div class="radio-card-desc">
+                Discovers public IP endpoints across independent community servers (Nextcloud, Matrix.org, FreeSwitch, Cloudflare). No single entity monitors your discovery traffic.
+              </div>
+            </div>
+          </label>
+
+          <!-- Air-Gapped / Direct -->
+          <label class="radio-card" id="card-ice-airgap">
+            <input type="radio" name="ice-mode" value="airgap">
+            <div class="radio-card-content">
+              <div class="radio-card-title">
+                Zero STUN (Air-Gapped LAN / Direct IPv6)
+                <span class="radio-card-badge" style="color: #60A5FA; border-color: rgba(96, 165, 250, 0.3); background-color: rgba(96, 165, 250, 0.1);">100% SOVEREIGN</span>
+              </div>
+              <div class="radio-card-desc">
+                Disables all external STUN queries (<code style="font-family: var(--font-mono);">iceServers: []</code>). Strictly direct host candidates. Ideal for local Wi-Fi, mesh nets, WireGuard/Tailscale VPNs, or direct IPv6.
+              </div>
+            </div>
+          </label>
+
+          <!-- Custom STUN / TURN -->
+          <label class="radio-card" id="card-ice-custom">
+            <input type="radio" name="ice-mode" value="custom">
+            <div class="radio-card-content">
+              <div class="radio-card-title">
+                Self-Hosted STUN / TURN (CoTURN)
+              </div>
+              <div class="radio-card-desc">
+                Provide your own self-hosted STUN or TURN relay server for maximum privacy and symmetric NAT traversal.
+              </div>
+              <div id="custom-ice-inputs" class="custom-stun-fields" style="display: none;">
+                <input type="text" id="custom-stun-url" class="form-control" placeholder="stun:your-server.domain.org:3478 or turn:...">
+                <input type="text" id="custom-stun-username" class="form-control" placeholder="Username (optional for TURN)">
+                <input type="password" id="custom-stun-credential" class="form-control" placeholder="Credential (optional for TURN)">
+              </div>
+            </div>
+          </label>
+
+          <!-- Google STUN (Legacy fallback) -->
+          <label class="radio-card" id="card-ice-google">
+            <input type="radio" name="ice-mode" value="google">
+            <div class="radio-card-content">
+              <div class="radio-card-title">
+                Standard Google STUN
+              </div>
+              <div class="radio-card-desc">
+                Uses Google's public reflector (<code style="font-family: var(--font-mono);">stun:stun.l.google.com:19302</code>).
+              </div>
+            </div>
+          </label>
+        </div>
+
+        <button id="btn-save-ice-settings" class="btn btn-primary">Apply Network Configuration</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Footer -->
   <footer>

@@ -6,6 +6,43 @@ let dataChannel = null;
 let ecdhKeyPair = null;
 let aesGcmKey = null;
 let isE2EEActive = false;
+let isPeerVerified = false;
+let currentSafetyCode = null;
+
+// Network Sovereignty / ICE Settings State
+const ICE_PRESETS = {
+  community: {
+    label: 'Community Mesh',
+    servers: [
+      { urls: 'stun:stun.nextcloud.com:443' },
+      { urls: 'stun:stun.matrix.org:3478' },
+      { urls: 'stun:stun.cloudflare.com:3478' },
+      { urls: 'stun:stun.freeswitch.org:3478' }
+    ]
+  },
+  airgap: {
+    label: 'Zero STUN (Air-Gapped)',
+    servers: []
+  },
+  custom: {
+    label: 'Self-Hosted',
+    servers: []
+  },
+  google: {
+    label: 'Google STUN',
+    servers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' }
+    ]
+  }
+};
+
+let currentIceMode = 'community';
+let customIceConfig = {
+  url: '',
+  username: '',
+  credential: ''
+};
 
 // File transfer state
 let incomingFile = {
@@ -27,6 +64,23 @@ const transferList = document.getElementById('transfer-list');
 const cryptoFingerprint = document.getElementById('crypto-fingerprint');
 const cipherStreamLog = document.getElementById('cipher-stream-log');
 
+// Modal & Sovereignty UI Elements
+const labelIceMode = document.getElementById('label-ice-mode');
+const btnOpenIceSettings = document.getElementById('btn-open-ice-settings');
+const iceSettingsModal = document.getElementById('ice-settings-modal');
+const btnCloseIceModal = document.getElementById('btn-close-ice-modal');
+const btnSaveIceSettings = document.getElementById('btn-save-ice-settings');
+const customIceInputs = document.getElementById('custom-ice-inputs');
+const customStunUrl = document.getElementById('custom-stun-url');
+const customStunUsername = document.getElementById('custom-stun-username');
+const customStunCredential = document.getElementById('custom-stun-credential');
+const btnExportStandalone = document.getElementById('btn-export-standalone');
+
+// Out-Of-Band Safety Verification Elements
+const safetyCodeNumber = document.getElementById('safety-code-number');
+const safetyVerificationBadge = document.getElementById('safety-verification-badge');
+const btnToggleVerifyPeer = document.getElementById('btn-toggle-verify-peer');
+
 // Setup role selectors
 document.getElementById('btn-host-setup').addEventListener('click', setupHost);
 document.getElementById('btn-join-setup').addEventListener('click', setupJoin);
@@ -34,130 +88,159 @@ document.getElementById('btn-finalize-host').addEventListener('click', finalizeH
 document.getElementById('btn-accept-offer').addEventListener('click', acceptOffer);
 document.getElementById('btn-reset-handshake').addEventListener('click', resetHandshake);
 
-// Copy utility
-function copyText(elementId) {
-  const textarea = document.getElementById(elementId);
-  textarea.select();
-  textarea.setSelectionRange(0, 99999);
-  navigator.clipboard.writeText(textarea.value);
-  logToCipherStream('Handshake code copied to clipboard');
-}
+if (btnOpenIceSettings) btnOpenIceSettings.addEventListener('click', openIceModal);
+if (btnCloseIceModal) btnCloseIceModal.addEventListener('click', closeIceModal);
+if (btnSaveIceSettings) btnSaveIceSettings.addEventListener('click', saveIceSettings);
+if (btnExportStandalone) btnExportStandalone.addEventListener('click', exportStandaloneVault);
+if (btnToggleVerifyPeer) btnToggleVerifyPeer.addEventListener('click', togglePeerVerification);
 
-// Log utility for Cryptographic Inspector
-function logToCipherStream(msg, isCiphertext = false) {
-  const time = new Date().toLocaleTimeString();
-  const line = document.createElement('div');
-  line.className = 'cipher-log-line';
-  
-  const timeSpan = document.createElement('span');
-  timeSpan.className = 'cipher-log-time';
-  timeSpan.textContent = `[${time}]`;
-  
-  const msgSpan = document.createElement('span');
-  msgSpan.className = 'cipher-log-msg';
-  msgSpan.textContent = msg;
-  if (isCiphertext) {
-    msgSpan.style.color = 'var(--color-accent)';
-    msgSpan.style.fontFamily = 'var(--font-mono)';
-  }
-  
-  line.appendChild(timeSpan);
-  line.appendChild(msgSpan);
-  cipherStreamLog.appendChild(line);
-  cipherStreamLog.scrollTop = cipherStreamLog.scrollHeight;
-}
-
-// System Message helper
-function appendSystemMessage(text) {
-  const msg = document.createElement('div');
-  msg.className = 'message-bubble system';
-  msg.textContent = text;
-  chatMessages.appendChild(msg);
-  chatMessages.scrollTop = chatMessages.scrollHeight;
-}
-
-// Enable Workspace elements after connection is established
-function enableWorkspace() {
-  chatInput.disabled = false;
-  btnSendMessage.disabled = false;
-  fileInput.disabled = false;
-  chatInput.placeholder = "Type an encrypted message...";
-  statusBadge.textContent = "CONNECTED";
-  statusBadge.className = "badge connected";
-  logToCipherStream("P2P Data Channel open. Exchanging public keys...");
-}
-
-// Disable Workspace elements
-function disableWorkspace() {
-  chatInput.disabled = true;
-  btnSendMessage.disabled = true;
-  fileInput.disabled = true;
-  chatInput.placeholder = "Establish WebRTC link to chat...";
-  statusBadge.textContent = "DISCONNECTED";
-  statusBadge.className = "badge";
-  securityIndicator.innerHTML = `
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-    E2EE INACTIVE`;
-  securityIndicator.style.color = "var(--color-text-secondary)";
-  cryptoFingerprint.textContent = "No keys exchanged yet";
-  isE2EEActive = false;
-  aesGcmKey = null;
-}
-
-// -----------------------------------------------------------------------------
-// WEBRTC SIGNALING & CONNECTION SETUP
-// -----------------------------------------------------------------------------
-
-const rtcConfig = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' }
-  ]
-};
-
-let reconnectTimeout = null;
-
-function createPeerConnection() {
-  localConnection = new RTCPeerConnection(rtcConfig);
-
-  // Monitor connection states
-  localConnection.onconnectionstatechange = () => {
-    logToCipherStream(`WebRTC Connection State: ${localConnection.connectionState}`);
-    
-    if (localConnection.connectionState === 'connected') {
-      if (reconnectTimeout) {
-        clearTimeout(reconnectTimeout);
-        reconnectTimeout = null;
-        logToCipherStream("Reconnected successfully.");
-        appendSystemMessage("Secure channel restored.");
-      }
-      enableWorkspace();
-    } else if (localConnection.connectionState === 'disconnected') {
-      // Show reconnecting badge but do not disable chat/key state immediately
-      statusBadge.textContent = "RECONNECTING";
-      statusBadge.className = "badge reconnecting";
-      logToCipherStream("Link disconnected temporarily. Attempting auto-reconnection...");
-      
-      if (!reconnectTimeout) {
-        reconnectTimeout = setTimeout(() => {
-          disableWorkspace();
-          appendSystemMessage("Secure channel lost (reconnection timeout).");
-          reconnectTimeout = null;
-        }, 12000); // 12 seconds grace period
-      }
-    } else if (localConnection.connectionState === 'failed' || localConnection.connectionState === 'closed') {
-      if (reconnectTimeout) {
-        clearTimeout(reconnectTimeout);
-        reconnectTimeout = null;
-      }
-      disableWorkspace();
-      appendSystemMessage("Secure channel closed.");
+// Radio card click handling for ICE Settings
+document.querySelectorAll('.radio-card').forEach(card => {
+  card.addEventListener('click', () => {
+    const radio = card.querySelector('input[type="radio"]');
+    if (radio) {
+      radio.checked = true;
+      updateRadioCardStyles();
     }
-  };
+  });
+});
 
-  localConnection.oniceconnectionstatechange = () => {
-    logToCipherStream(`ICE Connection State: ${localConnection.iceConnectionState}`);
-  };
+function updateRadioCardStyles() {
+  document.querySelectorAll('.radio-card').forEach(card => {
+    const radio = card.querySelector('input[type="radio"]');
+    if (radio && radio.checked) {
+      card.classList.add('active');
+      if (customIceInputs) {
+        customIceInputs.style.display = radio.value === 'custom' ? 'flex' : 'none';
+      }
+    } else {
+      card.classList.remove('active');
+    }
+  });
+}
+
+function openIceModal() {
+  // Sync form with current state
+  const targetRadio = document.querySelector(`input[name="ice-mode"][value="${currentIceMode}"]`);
+  if (targetRadio) targetRadio.checked = true;
+  if (customStunUrl) customStunUrl.value = customIceConfig.url || '';
+  if (customStunUsername) customStunUsername.value = customIceConfig.username || '';
+  if (customStunCredential) customStunCredential.value = customIceConfig.credential || '';
+  updateRadioCardStyles();
+  iceSettingsModal.classList.add('active');
+}
+
+function closeIceModal() {
+  iceSettingsModal.classList.remove('active');
+}
+
+function saveIceSettings() {
+  const selectedRadio = document.querySelector('input[name="ice-mode"]:checked');
+  if (selectedRadio) {
+    currentIceMode = selectedRadio.value;
+    if (currentIceMode === 'custom') {
+      customIceConfig.url = (customStunUrl ? customStunUrl.value.trim() : '');
+      customIceConfig.username = (customStunUsername ? customStunUsername.value.trim() : '');
+      customIceConfig.credential = (customStunCredential ? customStunCredential.value.trim() : '');
+    }
+    saveIceConfig();
+    updateIceModeBadge();
+    closeIceModal();
+    logToCipherStream(`Network Sovereignty updated: ICE mode set to [${ICE_PRESETS[currentIceMode] ? ICE_PRESETS[currentIceMode].label : currentIceMode}].`);
+  }
+}
+
+function updateIceModeBadge() {
+  if (labelIceMode) {
+    const label = ICE_PRESETS[currentIceMode] ? ICE_PRESETS[currentIceMode].label : 'Custom';
+    labelIceMode.textContent = `ICE: ${label}`;
+  }
+}
+
+function loadSavedIceConfig() {
+  try {
+    const saved = localStorage.getItem('aether_ice_config');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (parsed.mode && ICE_PRESETS[parsed.mode]) {
+        currentIceMode = parsed.mode;
+      }
+      if (parsed.custom) {
+        customIceConfig = parsed.custom;
+      }
+    }
+  } catch (e) {
+    console.warn("Failed to load saved ICE config", e);
+  }
+  updateIceModeBadge();
+}
+
+function saveIceConfig() {
+  try {
+    localStorage.setItem('aether_ice_config', JSON.stringify({
+      mode: currentIceMode,
+      custom: customIceConfig
+    }));
+  } catch (e) {
+    console.warn("Failed to save ICE config", e);
+  }
+}
+
+function getEffectiveRtcConfig() {
+  if (currentIceMode === 'airgap') {
+    return { iceServers: [] };
+  }
+  if (currentIceMode === 'custom') {
+    if (!customIceConfig.url) {
+      return { iceServers: ICE_PRESETS.community.servers };
+    }
+    const serverObj = { urls: customIceConfig.url.trim() };
+    if (customIceConfig.username) serverObj.username = customIceConfig.username.trim();
+    if (customIceConfig.credential) serverObj.credential = customIceConfig.credential.trim();
+    return { iceServers: [serverObj] };
+  }
+  if (ICE_PRESETS[currentIceMode]) {
+    return { iceServers: ICE_PRESETS[currentIceMode].servers };
+  }
+  return { iceServers: ICE_PRESETS.community.servers };
+}
+
+// Handshake Code Compression (reduces payload by 60-70% for copy-paste resilience)
+async function compressHandshake(jsonString) {
+  if (typeof CompressionStream !== 'undefined') {
+    try {
+      const stream = new Blob([jsonString]).stream();
+      const compressedStream = stream.pipeThrough(new CompressionStream('deflate'));
+      const compressedBlob = await new Response(compressedStream).blob();
+      const buffer = await compressedBlob.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      let binary = '';
+      for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      return 'aether:z:' + btoa(binary);
+    } catch (e) {
+      console.warn("Handshake compression fallback:", e);
+    }
+  }
+  return btoa(jsonString);
+}
+
+async function decompressHandshake(rawString) {
+  const trimmed = rawString.trim().replace(/\s+/g, '');
+  if (trimmed.startsWith('aether:z:')) {
+    const base64Data = trimmed.substring(9);
+    const binary = atob(base64Data);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const stream = new Blob([bytes]).stream();
+    const decompressedStream = stream.pipeThrough(new DecompressionStream('deflate'));
+    const decompressedBlob = await new Response(decompressedStream).blob();
+    return await decompressedBlob.text();
+  }
+  return atob(trimmed);
 }
 
 // Wait for ICE Candidates to complete gathering
@@ -201,13 +284,14 @@ async function setupHost() {
     logToCipherStream("Gathering network routes (ICE Candidates)...");
     await waitForIceGathering(localConnection);
     
-    // Encode description into Base64 for clean copy-pasting
+    // Encode description into compressed string for clean copy-pasting
     const connectionPayload = {
       sdp: localConnection.localDescription.sdp,
       type: localConnection.localDescription.type
     };
-    document.getElementById('local-offer-code').value = btoa(JSON.stringify(connectionPayload));
-    logToCipherStream("Host Handshake offer generated.");
+    const code = await compressHandshake(JSON.stringify(connectionPayload));
+    document.getElementById('local-offer-code').value = code;
+    logToCipherStream("Host Handshake offer generated (compressed).");
   } catch (err) {
     logToCipherStream(`Host Setup Error: ${err.message}`);
   }
@@ -242,7 +326,8 @@ async function acceptOffer() {
   }
 
   try {
-    const offerPayload = JSON.parse(atob(offerCodeRaw));
+    const offerJsonString = await decompressHandshake(offerCodeRaw);
+    const offerPayload = JSON.parse(offerJsonString);
     await localConnection.setRemoteDescription(new RTCSessionDescription(offerPayload));
     logToCipherStream("Remote offer description applied.");
 
@@ -257,9 +342,10 @@ async function acceptOffer() {
       sdp: localConnection.localDescription.sdp,
       type: localConnection.localDescription.type
     };
-    document.getElementById('local-answer-code').value = btoa(JSON.stringify(answerPayload));
+    const answerCode = await compressHandshake(JSON.stringify(answerPayload));
+    document.getElementById('local-answer-code').value = answerCode;
     document.getElementById('join-step-2').style.display = 'block';
-    logToCipherStream("Joiner Handshake answer generated.");
+    logToCipherStream("Joiner Handshake answer generated (compressed).");
   } catch (err) {
     logToCipherStream(`Accept Offer Error: ${err.message}`);
     alert("Invalid offer code. Please make sure you copied the full string.");
@@ -275,7 +361,8 @@ async function finalizeHost() {
   }
 
   try {
-    const answerPayload = JSON.parse(atob(answerCodeRaw));
+    const answerJsonString = await decompressHandshake(answerCodeRaw);
+    const answerPayload = JSON.parse(answerJsonString);
     await localConnection.setRemoteDescription(new RTCSessionDescription(answerPayload));
     logToCipherStream("Remote answer description applied. Negotiating P2P path...");
     document.getElementById('btn-finalize-host').disabled = true;
@@ -417,16 +504,19 @@ async function finalizeKeyAgreement(peerPublicKeyBase64) {
       .join(':')
       .toUpperCase();
 
+    // Derive 6-digit numeric Safety Code from first 4 bytes of fingerprint
+    const view = new DataView(fingerprintBuffer);
+    const numVal = Math.abs(view.getUint32(0)) % 1000000;
+    currentSafetyCode = String(numVal).padStart(6, '0').replace(/(\d{3})(\d{3})/, '$1-$2');
+    isPeerVerified = false;
+
     // Update UI
     cryptoFingerprint.textContent = fingerprintHex;
-    securityIndicator.innerHTML = `
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--color-success)" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-      E2EE ACTIVE`;
-    securityIndicator.style.color = "var(--color-success)";
-    
     isE2EEActive = true;
-    logToCipherStream("E2E AES-GCM-256 Key derivation complete. Fingerprint verified.");
-    appendSystemMessage("Secure End-to-End Encrypted channel established.");
+    updateVerificationUI();
+    
+    logToCipherStream(`E2E AES-GCM-256 Key derivation complete. Safety Code: ${currentSafetyCode}`);
+    appendSystemMessage(`Secure E2EE established! Compare 6-digit Safety Code (${currentSafetyCode}) with your peer to verify identity.`);
   } catch (err) {
     logToCipherStream(`Key Exchange Error: ${err.message}`);
     appendSystemMessage("Encryption key agreement failed!");
@@ -732,4 +822,113 @@ function createTransferItem(id, name, status) {
   
   transferList.appendChild(item);
   return item;
+}
+
+// -----------------------------------------------------------------------------
+// VERIFICATION, EXPORT & INITIALIZATION
+// -----------------------------------------------------------------------------
+
+function updateVerificationUI() {
+  if (safetyCodeNumber) {
+    safetyCodeNumber.textContent = currentSafetyCode || '------';
+  }
+  if (btnToggleVerifyPeer) {
+    btnToggleVerifyPeer.disabled = !isE2EEActive;
+    btnToggleVerifyPeer.textContent = isPeerVerified ? 'Peer Identity Verified (Click to Revoke)' : 'Mark Peer Identity as Verified';
+    btnToggleVerifyPeer.className = isPeerVerified ? 'btn btn-primary btn-verify' : 'btn btn-secondary btn-verify';
+  }
+  if (safetyVerificationBadge) {
+    if (!isE2EEActive) {
+      safetyVerificationBadge.className = 'safety-badge-status unverified';
+      safetyVerificationBadge.innerHTML = 'AWAITING KEY EXCHANGE';
+    } else if (isPeerVerified) {
+      safetyVerificationBadge.className = 'safety-badge-status verified';
+      safetyVerificationBadge.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg> VERIFIED SECURE`;
+    } else {
+      safetyVerificationBadge.className = 'safety-badge-status unverified';
+      safetyVerificationBadge.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg> UNVERIFIED PEER`;
+    }
+  }
+  if (securityIndicator && isE2EEActive) {
+    if (isPeerVerified) {
+      securityIndicator.innerHTML = `
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--color-success)" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>
+        E2EE VERIFIED`;
+      securityIndicator.style.color = "var(--color-success)";
+    } else {
+      securityIndicator.innerHTML = `
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--color-warning)" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        E2EE (UNVERIFIED)`;
+      securityIndicator.style.color = "var(--color-warning)";
+    }
+  }
+}
+
+function togglePeerVerification() {
+  if (!isE2EEActive) return;
+  isPeerVerified = !isPeerVerified;
+  updateVerificationUI();
+  if (isPeerVerified) {
+    logToCipherStream(`Peer verified! Anti-MITM safety code ${currentSafetyCode} confirmed.`);
+    appendSystemMessage(`Identity verified: Safety Code (${currentSafetyCode}) confirmed out-of-band.`);
+  } else {
+    logToCipherStream("Peer verification revoked.");
+    appendSystemMessage("Peer verification reset to unverified.");
+  }
+}
+
+// EXPORT VAULT AS AIR-GAPPED STANDALONE HTML FILE
+async function exportStandaloneVault() {
+  try {
+    logToCipherStream("Generating standalone single-file vault...");
+    const [htmlRes, cssRes, jsRes] = await Promise.all([
+      fetch('index.html'),
+      fetch('styles.css'),
+      fetch('script.js')
+    ]);
+    let htmlText = await htmlRes.text();
+    const cssText = await cssRes.text();
+    const jsText = await jsRes.text();
+
+    // Inline CSS
+    htmlText = htmlText.replace(
+      /<link rel="stylesheet" href="styles\.css">/i,
+      `<style>\n${cssText}\n</style>`
+    );
+    // Inline JS
+    htmlText = htmlText.replace(
+      /<script src="script\.js"><\/script>/i,
+      `<script>\n${jsText}\n</script>`
+    );
+    // Remove manifest link for standalone offline bundle
+    htmlText = htmlText.replace(/<link rel="manifest" href="manifest\.json">/i, '');
+
+    const blob = new Blob([htmlText], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'aether-vault-standalone.html';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    logToCipherStream("Standalone single-file vault exported successfully.");
+    appendSystemMessage("Offline Vault generated! You can run this single .html file completely air-gapped without any server or internet connection.");
+  } catch (err) {
+    logToCipherStream(`Export failed: ${err.message}`);
+    alert("Could not export standalone file automatically: " + err.message);
+  }
+}
+
+// Initial bootstrap
+loadSavedIceConfig();
+updateVerificationUI();
+
+// Register Service Worker for offline PWA operation
+if ('serviceWorker' in navigator && window.location.protocol.startsWith('http')) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').then(() => {
+      logToCipherStream("Offline PWA service worker registered.");
+    }).catch(() => {});
+  });
 }
